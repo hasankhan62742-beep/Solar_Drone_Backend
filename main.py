@@ -128,16 +128,26 @@ class InspectionResponse(BaseModel):
     clean_count: int
 
 
-def classify_image(img_path: str) -> tuple[str, float]:
+def load_image_array(img_path: str) -> np.ndarray:
     from tensorflow.keras.preprocessing import image as keras_image
 
     img = keras_image.load_img(img_path, target_size=IMG_SIZE)
-    img_array = keras_image.img_to_array(img) / 255.0
-    img_array = np.expand_dims(img_array, axis=0)
-    pred = float(model.predict(img_array, verbose=0)[0][0])
-    label = "Dusty" if pred > 0.5 else "Clean"
-    confidence = pred if pred > 0.5 else 1 - pred
-    return label, confidence
+    return keras_image.img_to_array(img) / 255.0
+
+
+def classify_batch(img_paths: list[str]) -> list[tuple[str, float]]:
+    """Runs all images through the model in a single batched call — far faster
+    than calling model.predict once per image, which is what was causing
+    requests to exceed the platform's timeout on free-tier CPU."""
+    batch = np.stack([load_image_array(p) for p in img_paths], axis=0)
+    preds = model.predict(batch, verbose=0).flatten()
+    results = []
+    for pred in preds:
+        pred = float(pred)
+        label = "Dusty" if pred > 0.5 else "Clean"
+        confidence = pred if pred > 0.5 else 1 - pred
+        results.append((label, confidence))
+    return results
 
 
 @app.get("/health")
@@ -156,19 +166,22 @@ def run_inspection():
     panel_positions = build_panel_grid(NUM_ROWS, NUM_COLS, PANEL_SPACING)
     flight_path = generate_coverage_path(panel_positions, NUM_ROWS, NUM_COLS)
 
+    # Pick one sample image per waypoint first (simulated camera captures)
+    img_paths = [
+        random.choice(dusty_samples if random.choice([True, False]) else clean_samples)
+        for _ in flight_path
+    ]
+
+    try:
+        classifications = classify_batch(img_paths)
+    except Exception as e:
+        logger.error("Batch classification failed: %s", e)
+        raise HTTPException(status_code=500, detail="Inference failed for this inspection run.")
+
     results = []
     dusty_count = 0
 
-    for i, waypoint in enumerate(flight_path):
-        is_dusty_sample = random.choice([True, False])
-        img_path = random.choice(dusty_samples if is_dusty_sample else clean_samples)
-
-        try:
-            label, confidence = classify_image(img_path)
-        except Exception as e:
-            logger.error("Classification failed for panel %d: %s", i + 1, e)
-            raise HTTPException(status_code=500, detail=f"Inference failed on panel {i + 1}")
-
+    for i, (waypoint, (label, confidence)) in enumerate(zip(flight_path, classifications)):
         if label == "Dusty":
             dusty_count += 1
             action = "SPRAY (cleaning triggered)"

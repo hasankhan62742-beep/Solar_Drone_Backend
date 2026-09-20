@@ -99,9 +99,17 @@ async def lifespan(app: FastAPI):
 
         all_paths = clean_samples + dusty_samples
         logger.info("Pre-computing classifications for all %d sample images (one-time cost)...", len(all_paths))
-        all_results = classify_batch(all_paths)
-        for path, result in zip(all_paths, all_results):
-            prediction_cache[path] = result
+
+        # Process in small chunks — doing all 30 in one batch can exceed the
+        # 512MB RAM limit on Render's free tier.
+        CHUNK_SIZE = 5
+        for start in range(0, len(all_paths), CHUNK_SIZE):
+            chunk = all_paths[start:start + CHUNK_SIZE]
+            chunk_results = classify_batch(chunk)
+            for path, result in zip(chunk, chunk_results):
+                prediction_cache[path] = result
+            logger.info("Pre-computed %d/%d images...", min(start + CHUNK_SIZE, len(all_paths)), len(all_paths))
+
         logger.info("Prediction cache ready — inspections will now be instant.")
     except FileNotFoundError as e:
         logger.warning("%s — /run-inspection will fail until this is fixed.", e)

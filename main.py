@@ -38,6 +38,7 @@ IMG_SIZE = (224, 224)
 model = None
 clean_samples = []
 dusty_samples = []
+prediction_cache = {}  # img_path -> (label, confidence), computed once at startup
 
 
 def build_panel_grid(rows: int, cols: int, spacing: float):
@@ -95,6 +96,13 @@ async def lifespan(app: FastAPI):
     try:
         clean_samples, dusty_samples = load_sample_images(dataset_dir)
         logger.info("Loaded %d clean / %d dusty sample images.", len(clean_samples), len(dusty_samples))
+
+        all_paths = clean_samples + dusty_samples
+        logger.info("Pre-computing classifications for all %d sample images (one-time cost)...", len(all_paths))
+        all_results = classify_batch(all_paths)
+        for path, result in zip(all_paths, all_results):
+            prediction_cache[path] = result
+        logger.info("Prediction cache ready — inspections will now be instant.")
     except FileNotFoundError as e:
         logger.warning("%s — /run-inspection will fail until this is fixed.", e)
 
@@ -166,17 +174,17 @@ def run_inspection():
     panel_positions = build_panel_grid(NUM_ROWS, NUM_COLS, PANEL_SPACING)
     flight_path = generate_coverage_path(panel_positions, NUM_ROWS, NUM_COLS)
 
-    # Pick one sample image per waypoint first (simulated camera captures)
+    if not prediction_cache:
+        raise HTTPException(status_code=503, detail="Prediction cache is not ready yet.")
+
+    # Pick one sample image per waypoint (simulated camera captures) and
+    # look up its already-computed classification — no live inference here,
+    # so this responds instantly regardless of server CPU speed.
     img_paths = [
         random.choice(dusty_samples if random.choice([True, False]) else clean_samples)
         for _ in flight_path
     ]
-
-    try:
-        classifications = classify_batch(img_paths)
-    except Exception as e:
-        logger.error("Batch classification failed: %s", e)
-        raise HTTPException(status_code=500, detail="Inference failed for this inspection run.")
+    classifications = [prediction_cache[p] for p in img_paths]
 
     results = []
     dusty_count = 0

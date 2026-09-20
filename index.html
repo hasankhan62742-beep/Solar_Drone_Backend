@@ -278,6 +278,7 @@
   document.getElementById("apiUrlDisplay").textContent = API_BASE_URL;
 
   let chart;
+  let inspectionInProgress = false;
 
   function initChart(clean = 0, dusty = 0) {
     const ctx = document.getElementById("statusChart");
@@ -342,6 +343,8 @@
   }
 
   async function runInspection() {
+    if (inspectionInProgress) return;
+    inspectionInProgress = true;
     const btn = document.getElementById("runBtn");
     btn.disabled = true;
     btn.innerHTML = `<svg class="spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 2a10 10 0 0 1 10 10"/></svg> Running…`;
@@ -371,6 +374,7 @@
       document.getElementById("gridTag").className = "tag";
       document.getElementById("panelGrid").innerHTML = `<div class="empty-state">Inspection failed — <strong>click Run Inspection</strong> again once the backend is awake.</div>`;
     } finally {
+      inspectionInProgress = false;
       btn.disabled = false;
       btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg> Run Inspection`;
     }
